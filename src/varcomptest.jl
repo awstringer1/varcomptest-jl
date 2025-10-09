@@ -244,6 +244,7 @@ end
 function Base.show(io::IO, x::VarianceComponents)
   column_labels = ["Component", "SS (R)", "SS (F)", "df (R)", "df (F)", "f", "Pr(F >= |f|)"]
   tau = x.tau
+  d = length(tau)
   ftable = x.ftable
   # Add a row of zeroes for the residual variance
   ftable = vcat(ftable, zeros(1, size(ftable, 2)))
@@ -253,7 +254,7 @@ function Base.show(io::IO, x::VarianceComponents)
     crayon"red bold"
   )
   pval_highlight_green = TextHighlighter(
-    (data, i, j) -> (j == 7 && i != 3) && data[i, j] <= .05,
+    (data, i, j) -> (j == 7 && i != d + 1) && data[i, j] <= .05,
     crayon"green bold"
   )
 
