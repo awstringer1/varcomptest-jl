@@ -13,7 +13,8 @@ using
   MixedModels,
   PrettyTables,
   Printf,
-  UnicodePlots
+  UnicodePlots,
+  Statistics
   # Regex
 
 ## END dependencies ----
@@ -272,42 +273,69 @@ function Base.show(io::IO, x::VarianceComponents)
       formatters = [fmt__round(4), (v, i, j) -> (i == d + 2 && v == 0.0) ? "-" : v, (v, i , j) -> (i == d + 1 && j == 1) ? "-" : v],
       highlighters = [tau_highlight_red, pval_highlight_green]
     )
-  
-  if x.A != nothing
-    subscripts  = Dict('0'=>'₀','1'=>'₁','2'=>'₂','3'=>'₃','4'=>'₄',
-    '5'=>'₅','6'=>'₆','7'=>'₇','8'=>'₈','9'=>'₉')
-    function subscript(n::Integer)
-      join(subscripts[d] for d in string(n))
-    end
-    pval_highlight_green2 = TextHighlighter(
-      (data, i, j) -> (j != 1) && data[i, j] <= .05,
-      crayon"green bold"
-    )
-
-    println(io, "Conditional Optimization of 𝛕 such that A𝛕 = 0 where A = ", x.A)
-    r, d = size(x.A)
-    tbldat = [x.lrtcond, 1. - cdf(Chisq(d - r), x.lrtcond), x.pval, x.pvaloneside]
-    tblnames = ["Obs. LRT", "χ²" * subscript(d - r) * " p-value", "BS p-val, A𝛕 ≠ 0", "BS p-val, A𝛕 > 0"]
-    pretty_table(tbldat';
-      column_labels = tblnames,
-      style = style,
-      table_format = table_format,
-      formatters = [fmt__round(4)],
-      highlighters = [pval_highlight_green2]
-    )
-    println("")
-    if x.lrtboot != nothing
-      B = length(x.lrtboot)
-      print(
-        UnicodePlots.histogram(
-          x.lrtboot, vertical = true, width = 50, nbins = B / 4.,
-          title = "Bootstrap LRT distribution, $B samples:", xlabel = "Bootstrapped LRT", ylabel = "Frequency"
-        )
-      )
-    end
-  end
 end
 
+struct bootResults
+  # The sampled data
+  samples::Matrix{Float64}
+  # The sampled log-likelihood ratios
+  lrt::Vector{Float64}
+  # The sampled MLE
+  mle::Union{Vector{Float64}, Matrix{Float64}}
+  # Number of samples
+  B::Int64
+  # p-values
+  pval::Float64
+  pvalonesidegt::Float64
+  pvalonesidelt::Float64
+  A::Union{Nothing, Matrix{Float64}}
+end
+
+function Base.show(io::IO, x::bootResults)
+  B = x.B
+  d = size(x.mle, 2)
+  println("Results based on $B bootstrap samples with $d parameters.")
+  println("")
+  println("Distribution of the MLE")
+  mle = DataFrame(x.mle, ["𝛕" * "$i" for i in 1:d])
+  tbl = describe(mle)
+  style = TextTableStyle(first_line_column_label = crayon"bold");
+  table_format = TextTableFormat(borders = text_table_borders__unicode_rounded);
+  pretty_table(tbl; style = style, table_format = table_format)
+  println("Access individual samples using 'mle' property.")
+  println("")
+  if (x.A != nothing)
+    r = size(x.A, 1)
+    if r < d
+      println("Distribution of A𝛕 where A = ", x.A)
+      mleA = DataFrame(x.mle * x.A', ["A𝛕" * "$i" for i in 1:r])
+      tbl = describe(mleA)
+      pretty_table(tbl; style = style, table_format = table_format)
+    end
+  end
+  println("")
+  println("Bootstrap LRT distribution")
+  print(
+    UnicodePlots.histogram(
+      x.lrt, vertical = true, width = 50, nbins = B / 4.,
+      title = "Bootstrap LRT distribution, $B samples:", xlabel = "Bootstrapped LRT", ylabel = "Frequency"
+    )
+  )
+  println("")
+  tbldat = [mean(x.lrt), x.pval, x.pvalonesidegt, x.pvalonesidelt]
+  tblnames = ["Mean LRT", "BS p-val, A𝛕 ≠ 0", "BS p-val, A𝛕 > 0", "BS p-val, A𝛕 < 0"]
+  pval_highlight_green2 = TextHighlighter(
+    (data, i, j) -> (j != 1) && data[i, j] <= .05,
+    crayon"green bold"
+  )
+  pretty_table(tbldat';
+    column_labels = tblnames,
+    style = style,
+    table_format = table_format,
+    formatters = [fmt__round(4)],
+    highlighters = [pval_highlight_green2]
+  )
+end
 
 struct VarCompModel
   opt::optResults
@@ -315,7 +343,7 @@ struct VarCompModel
   fe::FixedEffects
   vr::VarianceComponents
   model::Model
-  samples::Matrix{Float64}
+  bootresults::Union{Nothing, bootResults}
 end
 
 function Base.show(io::IO, x::VarCompModel)
@@ -326,6 +354,9 @@ function Base.show(io::IO, x::VarCompModel)
   println("")
   show(io, x.vr)
   println("")
+  if x.bootresults != nothing
+    show(io, x.bootresults)
+  end
   println("")
   println("Access optimization information through 'opt' and 'optcond' properties.")
 end
@@ -481,7 +512,7 @@ end;
 newton = function(tau::Vector{Float64}, model::Model, control::NewtonControl; A::Union{Nothing, Matrix{Float64}} = nothing)
   verbose = control.verbose
   d = length(tau)
-  if A === nothing
+  if A == nothing
     Q2 = I(d)
   else
     r = size(A, 1)
@@ -656,10 +687,12 @@ function varcompmodel(
   lrtboot = nothing
   pval = -1.
   pvaloneside = -1.
+  boot = nothing
   if B > 0
     lrtboot = zeros(B)
     pvalind = zeros(B)
-    pvalonesideind = zeros(B)
+    pvalonesideindgt = zeros(B)
+    pvalonesideindlt = zeros(B)
     mleboot = zeros(B, d)
     # Obtain the model quantities under the conditional model
     Zsamp = zeros(N, B)
@@ -689,15 +722,21 @@ function varcompmodel(
         optsampcond = newton(taumle, modelsamp, control.newtoncontrol, A = A);
         lrtboot[b] = -optsamp.val + optsampcond.val
         pvalind[b] = lrtboot[b] >= -opt.val + optcond.val
+        pvalonesideindgt[b] = lrtboot[b] >= -opt.val + optcond.val && all(A * optsamp.par .>= 0.)
+        pvalonesideindlt[b] = lrtboot[b] >= -opt.val + optcond.val && all(A * optsamp.par .<= 0.)
       else
         lrtboot[b] = -optsamp.val
         pvalind[b] = -optsamp.val >= -opt.val
+        pvalonesideindgt[b] = -optsamp.val >= -opt.val && all(A * optsamp.par .>= 0.)
+        pvalonesideindlt[b] = -optsamp.val >= -opt.val && all(A * optsamp.par .<= 0.)
       end
-      pvalonesideind[b] = optsamp.val <= opt.val && all(optsamp.par .>= 0.)
+      
       mleboot[b, :] = optsamp.par
     end
     pval = mean(pvalind)
-    pvaloneside = mean(pvalonesideind)
+    pvalonesidegt = mean(pvalonesideindgt)
+    pvalonesidelt = mean(pvalonesideindlt)
+    boot = bootResults(Zsamp, lrtboot, mleboot, B, pval, pvalonesidegt, pvalonesidelt, A)
   end
   vr = VarianceComponents(
     renames, varcompest, ftable, 
@@ -706,8 +745,8 @@ function varcompmodel(
     optcond == nothing ? -opt.val : -opt.val + optcond.val
   )
 
-
-  out = VarCompModel(opt, optcond, fe, vr, model, Zsamp)
+  
+  out = VarCompModel(opt, optcond, fe, vr, model, boot)
 
   return out
 end
