@@ -103,14 +103,13 @@ function Model(y::Vector{Float64}, X::Matrix{Float64}, Z::SparseMatrixCSC{Float6
 
 end;
 
-function Model!(newy::AbstractVector{<:Float64}, model::Model)
+function Model!(model::Model, newy::AbstractVector{<:Float64})
   # Update a given model
   model.Pzty .= model.Zqr.Q' * newy[model.Zqr.prow];
   model.Utysqnorm = sum(abs2, (model.Xqr.Q' * newy)[(model.p + 1):model.n]);
   r = size(model.Ldecomp.L, 1)
   model.PztyLp .= model.Pzty
   model.PztyLp[1:r] .= model.PztyLp[1:r][model.Ldecomp.p]
-  return model
 end
 
 # Optimization control and printing #
@@ -184,8 +183,8 @@ function Base.show(io::IO, x::optResults)
     println(io, indent, "Projected Gradient: ", round.(x.derivs.gradient, digits=Int64(round(abs(log10(x.control.eps))))))
     E = eigen(x.derivs.Hessian)
     Ec = eigen(Q2 * x.derivs.Hessian * Q2')
-    println(io, indent, "Unprojected Hessian Eigenvalues: ", round.(E.values, digits = 3))
-    println(io, indent, "Projected Hessian Eigenvalues: ", round.(Ec.values, digits = 3))
+    println(io, indent, "Unprojected Hessian Eigenvalues: ", round.(Ec.values, digits = 3))
+    println(io, indent, "Projected Hessian Eigenvalues: ", round.(E.values, digits = 3))
     println(io, line)
     println(io, "Control parameters: ")
     println(io, line)
@@ -244,31 +243,33 @@ end
 function Base.show(io::IO, x::VarianceComponents)
   column_labels = ["Component", "SS (R)", "SS (F)", "df (R)", "df (F)", "f", "Pr(F >= |f|)"]
   tau = x.tau
-  d = length(tau)
+  d = length(tau) - 1
   ftable = x.ftable
   # Add a row of zeroes for the residual variance
   ftable = vcat(ftable, zeros(1, size(ftable, 2)))
 
   tau_highlight_red = TextHighlighter(
-    (data, i, j) -> (j == 1) && data[i, j] <= 0.,
+    (data, i, j) -> (j == 1 && i != d + 1) && data[i, j] <= 0.,
     crayon"red bold"
   )
   pval_highlight_green = TextHighlighter(
-    (data, i, j) -> (j == 7 && i != d + 1) && data[i, j] <= .05,
+    (data, i, j) -> (j == 7 && i != d + 2) && data[i, j] <= .05,
     crayon"green bold"
   )
 
-  data = hcat(tau, ftable)
+  vals = vcat(tau[1:d], 0, tau[d + 1])
+  data = hcat(vals, ftable)
   style = TextTableStyle(first_line_column_label = crayon"bold");
   table_format = TextTableFormat(borders = text_table_borders__unicode_rounded);
+  rownames = vcat(x.names[1:d], "All", x.names[d + 1])
 
-  println(io, "F-tests of individual variance components:")
+  println(io, "F-tests of variance components:")
   pretty_table(data;
       column_labels = column_labels,
-      row_labels = x.names,
+      row_labels = rownames,
       style = style,
       table_format = table_format,
-      formatters = [fmt__round(4), (v, i, j) -> (i == 3 && v == 0.0) ? "-" : v],
+      formatters = [fmt__round(4), (v, i, j) -> (i == d + 2 && v == 0.0) ? "-" : v, (v, i , j) -> (i == d + 1 && j == 1) ? "-" : v],
       highlighters = [tau_highlight_red, pval_highlight_green]
     )
   
@@ -285,8 +286,8 @@ function Base.show(io::IO, x::VarianceComponents)
 
     println(io, "Conditional Optimization of 𝛕 such that A𝛕 = 0 where A = ", x.A)
     r, d = size(x.A)
-    tbldat = [x.lrtcond, 1. - cdf(Chisq(d), x.lrtcond), x.pval, x.pvaloneside]
-    tblnames = ["Obs. LRT", "χ²" * subscript(d) * " p-value", "BS p-val, A𝛕 ≠ 0", "BS p-val, A𝛕 > 0"]
+    tbldat = [x.lrtcond, 1. - cdf(Chisq(d - r), x.lrtcond), x.pval, x.pvaloneside]
+    tblnames = ["Obs. LRT", "χ²" * subscript(d - r) * " p-value", "BS p-val, A𝛕 ≠ 0", "BS p-val, A𝛕 > 0"]
     pretty_table(tbldat';
       column_labels = tblnames,
       style = style,
@@ -313,6 +314,20 @@ struct VarCompModel
   optcond::Union{Nothing, optResults}
   fe::FixedEffects
   vr::VarianceComponents
+  model::Model
+  samples::Matrix{Float64}
+end
+
+function Base.show(io::IO, x::VarCompModel)
+  println("Variance components model fit by maximum normalized residual likelihood.")
+  println("")
+  println("Fixed Effects Estimates")
+  show(io, x.fe)
+  println("")
+  show(io, x.vr)
+  println("")
+  println("")
+  println("Access optimization information through 'opt' and 'optcond' properties.")
 end
 
 struct VarCompControl
@@ -600,15 +615,19 @@ function varcompmodel(
   varcompest = copy(taumle)
   push!(varcompest, sigmasqest)
   # F tests
-  ftable = zeros(d, 6)
+  ftable = zeros(d + 1, 6)
   XZ = hcat(X, Z)
   qr1 = qr(XZ)
   r1 = size(qr1.R, 1)
   df1 = N - r1
   Uy1 = (qr1.Q' * y[qr1.prow])[(r1 + 1):N]
-  for i in 1:d
+  for i in 1:(d + 1)
     # F-test of tau[i]=0
-    XZ0 = sparse(hcat(X, [Zblocks[j] for j in filter(j -> j != i, 1:d)]...))
+    if i <= d
+      XZ0 = sparse(hcat(X, [Zblocks[j] for j in filter(j -> j != i, 1:d)]...))
+    else
+      XZ0 = sparse(X)
+    end
     qr0 = qr(XZ0)
     r0 = size(qr0.R, 1)
     df0 = r1 - r0
@@ -624,7 +643,7 @@ function varcompmodel(
 
   ## Fit the conditional model ----
   if A != nothing
-    optcond = newton(tauinit, model, control.newtoncontrol, A = A);
+    optcond = newton(tauopt, model, control.newtoncontrol, A = A);
     tauoptcond = copy(optcond.par)
     optcondval = copy(optcond.val)
   else
@@ -656,15 +675,24 @@ function varcompmodel(
       Ldecomp = cholesky!(Ldecomp, Symmetric(ZRDR), shift = 1., check = false);
       r = size(Ldecomp.L, 1)
       Zsamp[1:r, :] .= sparse(Ldecomp.L) * Zsamp[1:r, :][invperm(Ldecomp.p), :]
-      Zsamp = (model.Zqr.Q * Zsamp)[invperm(model.Zqr.prow), :]
+      Zsamp .= (model.Zqr.Q * Zsamp)[invperm(model.Zqr.prow), :]
     end
     ysamp = similar(y)
+    modelsamp = Model(y, X, Z, mvec) # Create it again, for now
     for b in 1:B
       ysamp = @view Zsamp[:, b]
-      modelsamp = Model!(ysamp, model)
+      Model!(modelsamp, ysamp)
+      taumle = copy(opt.par)
       optsamp = newton(taumle, modelsamp, control.newtoncontrol, A = nothing);
-      lrtboot[b] = -optsamp.val + optcondval
-      pvalind[b] = -optsamp.val >= -opt.val
+      if A != nothing
+        taumle = copy(optcond.par)
+        optsampcond = newton(taumle, modelsamp, control.newtoncontrol, A = A);
+        lrtboot[b] = -optsamp.val + optsampcond.val
+        pvalind[b] = lrtboot[b] >= -opt.val + optcond.val
+      else
+        lrtboot[b] = -optsamp.val
+        pvalind[b] = -optsamp.val >= -opt.val
+      end
       pvalonesideind[b] = optsamp.val <= opt.val && all(optsamp.par .>= 0.)
       mleboot[b, :] = optsamp.par
     end
@@ -679,7 +707,7 @@ function varcompmodel(
   )
 
 
-  out = VarCompModel(opt, optcond, fe, vr)
+  out = VarCompModel(opt, optcond, fe, vr, model, Zsamp)
 
   return out
 end
