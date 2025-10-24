@@ -131,6 +131,7 @@ function NewtonControl(;
 end
 
 struct optResults
+  init::Vector{Float64}
   par::Vector{Float64}
   val::Float64
   derivs::NamedTuple{(:gradient, :Hessian), Tuple{Vector{Float64}, Matrix{Float64}}}
@@ -147,6 +148,7 @@ function Base.show(io::IO, x::optResults)
     println(io, line)
     println(io, "Unconditional Optimization of 𝛕")
     println(io, line)
+    println(io, indent, "Starting value: ", round.(x.init, digits = 3))
     println(io, indent, "Minimizer: ", round.(x.par, digits = 3))
     println(io, indent, "Minimum value: ", round(x.val, digits = 3))
     println(io, indent, "Number of iterations: ", x.itr)
@@ -242,12 +244,11 @@ struct VarianceComponents
 end
 
 function Base.show(io::IO, x::VarianceComponents)
-  column_labels = ["Component", "SS (R)", "SS (F)", "df (R)", "df (F)", "f", "Pr(F >= |f|)"]
+  column_labels = ["Component", "Df", "Sum Sq", "Mean Sq", "F value", "Pr(>F)"]
   tau = x.tau
   d = length(tau) - 1
   ftable = x.ftable
   # Add a row of zeroes for the residual variance
-  ftable = vcat(ftable, zeros(1, size(ftable, 2)))
 
   tau_highlight_red = TextHighlighter(
     (data, i, j) -> (j == 1 && i != d + 1) && data[i, j] <= 0.,
@@ -258,11 +259,10 @@ function Base.show(io::IO, x::VarianceComponents)
     crayon"green bold"
   )
 
-  vals = vcat(tau[1:d], 0, tau[d + 1])
-  data = hcat(vals, ftable)
+  data = hcat(tau, ftable)
   style = TextTableStyle(first_line_column_label = crayon"bold");
   table_format = TextTableFormat(borders = text_table_borders__unicode_rounded);
-  rownames = vcat(x.names[1:d], "All", x.names[d + 1])
+  rownames = vcat(x.names[1:d], "Residual")
 
   println(io, "F-tests of variance components:")
   pretty_table(data;
@@ -270,7 +270,7 @@ function Base.show(io::IO, x::VarianceComponents)
       row_labels = rownames,
       style = style,
       table_format = table_format,
-      formatters = [fmt__round(4), (v, i, j) -> (i == d + 2 && v == 0.0) ? "-" : v, (v, i , j) -> (i == d + 1 && j == 1) ? "-" : v],
+      formatters = [fmt__round(4), (v, i , j) -> (i == d + 1 && j > 4) ? "-" : v],
       highlighters = [tau_highlight_red, pval_highlight_green]
     )
 end
@@ -511,6 +511,7 @@ end;
 
 newton = function(tau::Vector{Float64}, model::Model, control::NewtonControl; A::Union{Nothing, Matrix{Float64}} = nothing)
   verbose = control.verbose
+  tauinit = copy(tau)
   d = length(tau)
   if A == nothing
     Q2 = I(d)
@@ -576,6 +577,7 @@ newton = function(tau::Vector{Float64}, model::Model, control::NewtonControl; A:
     end
   end
   out = optResults(
+    tauinit,
     tau,
     nrll(tau, model),
     (gradient = gg, Hessian = H),
@@ -598,20 +600,99 @@ function varcompmodel(
   A::Union{Nothing, Matrix{Float64}}=nothing
 )
   # Parse the formula and create the model matrices
-  mod = LinearMixedModel(formula, dat) # Does NOT fit, just creates quantities
-  N, p = size(mod.Xymat); p -= 1
-  X = mod.Xymat[:, 1:p]
-  y = mod.Xymat[:, p + 1]
-  Zblocks = [trm for trm in mod.reterms]
+  # MixedModels sorts the variables lexicographically which messes up ANOVA and also my custom LRT stuff
+  # So parse the formula and build the matrices manually
+  rhs_string = string.(formula.rhs)
+  rhs_string = isa(rhs_string, Tuple) ? rhs_string : [rhs_string]
+  reterms = filter(s -> occursin("|", s), rhs_string)
+  renames = [match(r"\|\s*(.+)\)", s).captures[1] for s in reterms]
+
+  lhs = formula.lhs
+  rhs_terms = isa(formula.rhs, AbstractVector) ? formula.rhs : [formula.rhs]
+  rand_terms = [term(1) | Term(Symbol(r)) for r in renames]
+  fixed_terms = []
+  
+  for t in rhs_terms
+      if !occursin("|", string(t))
+          push!(fixed_terms, t)
+      end
+  end
+  if !any([string(t) == "1" for t in fixed_terms])
+    insert!(fixed_terms, 1, term(1))
+  end
+
+  d = length(rand_terms)
+  p = length(fixed_terms)
+
+  formulas = [lhs ~ (sum(fixed_terms) + r) for r in rand_terms]
+  Zblocks = Vector{Adjoint{Float64, SparseArrays.SparseMatrixCSC{Float64, Int64}}}(undef, d)
+
+  lmod = nothing
+  for i in 1:d
+    lmod = LinearMixedModel(formulas[i], dat) # Does NOT fit, just creates quantities
+    Zblocks[i] = sparse(lmod.reterms[1])
+  end
+
+  N, p = size(lmod.Xymat); p -= 1
+  X = lmod.Xymat[:, 1:p]
+  y = lmod.Xymat[:, p + 1]
   Z = sparse(hcat(Zblocks...));
   mvec = [size(block, 2) for block in Zblocks];
-  d = length(mod.reterms)
+
+  ## First: ANOVA ----
+  ftable = zeros(d + 1, 5)
+  XZ0 = sparse(X)
+  qr0 = nothing
+  r0 = nothing
+  ss0 = nothing
+  qr1 = nothing
+  r1 = nothing
+  ss1 = nothing
+  ranktol = 1e-08
+  M = zeros(d, d)
+  S = zeros(d)
+  rvec = zeros(d)
+  for j in 1:d
+    qr0 = qr(XZ0)
+    r0 = sum(abs.(diag(qr0.R)) .> ranktol) # Rank
+    ss0 = sum(abs2, (qr0.Q' * y[qr0.prow])[(r0 + 1):N])
+
+    XZ1 = hcat(XZ0, sparse(Zblocks[j]))
+    qr1 = qr(XZ1)
+    r1 = sum(abs.(diag(qr1.R)) .> ranktol) # Rank
+
+    ss1 = sum(abs2, (qr1.Q' * y[qr1.prow])[(r1 + 1):N])
+
+    rvec[j] = r1 - r0
+
+    if r1 > r0
+      ftable[j, 1:3] = [r1 - r0, ss0 - ss1, (ss0 - ss1) / (r1 - r0)]
+      # Fill the M matrix
+      M[j, j] = sum(abs2, (qr0.Q' * Matrix(Zblocks[j])[qr0.prow, :])[(r0 + 1):N, :])
+      for i in (j + 1):d
+        M[j, i] = sum(abs2, (qr0.Q' * Matrix(Zblocks[i])[qr0.prow, :])[(r0 + 1):N, :]) - sum(abs2, (qr1.Q' * Matrix(Zblocks[i])[qr1.prow, :])[(r1 + 1):N, :])
+      end
+    else
+      @error "Some sequential ANOVA terms had zero or negative degrees of freedom. Expect an error."
+    end
+    XZ0 = XZ1
+  end
+  # Residuals
+  ftable[d + 1, 1:3] = [N - r1, ss1, ss1 / (N - r1)]
+  ftable[1:d, 4] = ftable[1:d, 3] / ftable[d + 1, 3]
+  for i in 1:d
+    ftable[i, 5] = 1. - cdf(FDist(ftable[i, 1], ftable[d + 1, 1]), ftable[i, 3] / ftable[d + 1, 3])
+  end
+  sigmasqest = ftable[d + 1, 3]
+  # Initial values
+  S = ftable[1:d, 2] / sigmasqest - rvec
+  tauinit = M \ S
 
   # Create the model
   model = Model(y, X, Z, mvec);
-
+  
   # Fit the model
-  tauinit = Float64.(zeros(d))
+  # tauinit = Float64.(zeros(d))
   opt = newton(tauinit, model, control.newtoncontrol);
   tauopt = copy(opt.par)
   
@@ -638,45 +719,23 @@ function varcompmodel(
 
   betacovmat = sigmasqest * inv(PztX' * PztX)
 
-  fe = FixedEffects(mod.feterm.cnames, betaest, betacovmat)
-  # Variance components estimates and F-tests
-  reterms = filter(s -> occursin("|", s), string.(formula.rhs))
-  renames = [match(r"\|\s*(.+)\)", s).captures[1] for s in reterms]
-  push!(renames, "Resid. Var")
+  fe = FixedEffects(lmod.feterm.cnames, betaest, betacovmat)
+  
+  # Variance components estimates
   varcompest = copy(taumle)
   push!(varcompest, sigmasqest)
-  # F tests
-  ftable = zeros(d + 1, 6)
-  XZ = hcat(X, Z)
-  qr1 = qr(XZ)
-  r1 = size(qr1.R, 1)
-  df1 = N - r1
-  Uy1 = (qr1.Q' * y[qr1.prow])[(r1 + 1):N]
-  for i in 1:(d + 1)
-    # F-test of tau[i]=0
-    if i <= d
-      XZ0 = sparse(hcat(X, [Zblocks[j] for j in filter(j -> j != i, 1:d)]...))
-    else
-      XZ0 = sparse(X)
-    end
-    qr0 = qr(XZ0)
-    r0 = size(qr0.R, 1)
-    df0 = r1 - r0
 
-    Uy0 = (qr0.Q' * y[qr0.prow])[(r0 + 1):N]
-
-    ss0 = sum(abs2, Uy0)
-    ss1 = sum(abs2, Uy1)
-    fstat = ( (ss0 - ss1) / df0 ) / (ss1 / df1)
-    pval = 1 - cdf(FDist(df0, df1), fstat)
-    ftable[i, :] = [ss0, ss1, df0, df1, fstat, pval]
-  end
 
   ## Fit the conditional model ----
   if A != nothing
-    optcond = newton(tauopt, model, control.newtoncontrol, A = A);
-    tauoptcond = copy(optcond.par)
-    optcondval = copy(optcond.val)
+    if size(A, 1) > 1
+      optcond = newton(tauopt, model, control.newtoncontrol, A = A);
+      tauoptcond = copy(optcond.par)
+      optcondval = copy(optcond.val)
+    else
+      optcond = nothing
+      optcondval = 0
+    end
   else
     optcond = nothing
     optcondval = 0
