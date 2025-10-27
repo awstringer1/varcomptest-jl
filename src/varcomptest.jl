@@ -286,8 +286,7 @@ struct bootResults
   B::Int64
   # p-values
   pval::Float64
-  pvalonesidegt::Float64
-  pvalonesidelt::Float64
+  pvaloneside::Float64
   A::Union{Nothing, Matrix{Float64}}
 end
 
@@ -322,8 +321,8 @@ function Base.show(io::IO, x::bootResults)
     )
   )
   println("")
-  tbldat = [mean(x.lrt), x.pval, x.pvalonesidegt, x.pvalonesidelt]
-  tblnames = ["Mean LRT", "BS p-val, A𝛕 ≠ 0", "BS p-val, A𝛕 > 0", "BS p-val, A𝛕 < 0"]
+  tbldat = [mean(x.lrt), x.pval, x.pvaloneside]
+  tblnames = ["Mean LRT", "BS p-val, A𝛕 ≠ 0", "BS p-val, A𝛕 > 0"]
   pval_highlight_green2 = TextHighlighter(
     (data, i, j) -> (j != 1) && data[i, j] <= .05,
     crayon"green bold"
@@ -687,6 +686,7 @@ function varcompmodel(
   # Initial values
   S = ftable[1:d, 2] / sigmasqest - rvec
   tauinit = M \ S
+  tauinit = [t >= 0 ? t : 0. for t in tauinit]
 
   # Create the model
   model = Model(y, X, Z, mvec);
@@ -727,18 +727,20 @@ function varcompmodel(
 
 
   ## Fit the conditional model ----
+  docond = false
+  optcond = nothing
+  optcondval = 0
   if A != nothing
-    if size(A, 1) > 1
+    if size(A, 1) < d
       optcond = newton(tauopt, model, control.newtoncontrol, A = A);
       tauoptcond = copy(optcond.par)
       optcondval = copy(optcond.val)
+      docond = true
     else
-      optcond = nothing
-      optcondval = 0
+      # A is full rank so the conditional MLE is zero.
+      # In this case we still bootstrap the full-zero hypothesis
+      A = Matrix(Float64.(I(d)))
     end
-  else
-    optcond = nothing
-    optcondval = 0
   end
 
   ## Bootstrapping ----
@@ -750,15 +752,14 @@ function varcompmodel(
   if B > 0
     lrtboot = zeros(B)
     pvalind = zeros(B)
-    pvalonesideindgt = zeros(B)
-    pvalonesideindlt = zeros(B)
+    pvalonesideind = zeros(B)
     mleboot = zeros(B, d)
     # Obtain the model quantities under the conditional model
     Zsamp = zeros(N, B)
     Zsamp = randn!(Zsamp)
-    condmle = A == nothing ? zeros(d) : copy(optcond.par)
+    condmle = docond ? copy(optcond.par) : zeros(d)
     taumle = copy(opt.par)
-    if A != nothing
+    if docond
       # Adjust the samples
       taurep = vcat([fill(condmle[i], model.mvec[i]) for i in eachindex(condmle)]...)
       Dtau = Diagonal(taurep[model.Zqr.pcol])
@@ -776,26 +777,22 @@ function varcompmodel(
       Model!(modelsamp, ysamp)
       taumle = copy(opt.par)
       optsamp = newton(taumle, modelsamp, control.newtoncontrol, A = nothing);
-      if A != nothing
+      if docond
         taumle = copy(optcond.par)
         optsampcond = newton(taumle, modelsamp, control.newtoncontrol, A = A);
         lrtboot[b] = -optsamp.val + optsampcond.val
         pvalind[b] = lrtboot[b] >= -opt.val + optcond.val
-        pvalonesideindgt[b] = lrtboot[b] >= -opt.val + optcond.val && all(A * optsamp.par .>= 0.)
-        pvalonesideindlt[b] = lrtboot[b] >= -opt.val + optcond.val && all(A * optsamp.par .<= 0.)
+        pvalonesideind[b] = lrtboot[b] >= -opt.val + optcond.val && all(A * optsamp.par .>= 0.)
       else
         lrtboot[b] = -optsamp.val
         pvalind[b] = -optsamp.val >= -opt.val
-        pvalonesideindgt[b] = -optsamp.val >= -opt.val && all(A * optsamp.par .>= 0.)
-        pvalonesideindlt[b] = -optsamp.val >= -opt.val && all(A * optsamp.par .<= 0.)
+        pvalonesideind[b] = -optsamp.val >= -opt.val && all(optsamp.par .>= 0.)
       end
-      
       mleboot[b, :] = optsamp.par
     end
     pval = mean(pvalind)
-    pvalonesidegt = mean(pvalonesideindgt)
-    pvalonesidelt = mean(pvalonesideindlt)
-    boot = bootResults(Zsamp, lrtboot, mleboot, B, pval, pvalonesidegt, pvalonesidelt, A)
+    pvaloneside = mean(pvalonesideind)
+    boot = bootResults(Zsamp, lrtboot, mleboot, B, pval, pvaloneside, A)
   end
   vr = VarianceComponents(
     renames, varcompest, ftable, 
