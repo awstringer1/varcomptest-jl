@@ -720,7 +720,7 @@ function varcompmodel(
   rand_terms = [term(1) | Term(Symbol(r)) for r in renames]
   fixed_terms = []
   
-  for t in rhs_terms
+  for t in rhs_string
       if !occursin("|", string(t))
           push!(fixed_terms, t)
       end
@@ -732,7 +732,8 @@ function varcompmodel(
   d = length(rand_terms)
   p = length(fixed_terms)
 
-  formulas = [lhs ~ (sum(fixed_terms) + r) for r in rand_terms]
+  rhs_fixed = p > 1 ? sum(term.(fixed_terms[2:p])) : nothing
+  formulas = (rhs_fixed == nothing) ? [lhs ~ r for r in rand_terms] : [lhs ~ (rhs_fixed + r) for r in rand_terms]
   Zblocks = Vector{Adjoint{Float64, SparseArrays.SparseMatrixCSC{Float64, Int64}}}(undef, d)
 
   lmod = nothing
@@ -749,71 +750,12 @@ function varcompmodel(
 
   ## First: ANOVA ----
   aov = anova(y, X, Zblocks, renames)
-  # ftable = zeros(d + 1, 5)
-  # XZ0 = sparse(X)
-  # qr0 = nothing
-  # r0 = nothing
-  # ss0 = nothing
-  # qr1 = nothing
-  # r1 = nothing
-  # ss1 = nothing
-  # ranktol = 1e-08
-  # M = zeros(d, d)
-  # S = zeros(d)
-  # rvec = zeros(d)
-  # # ZtZtrace = Vector{Float64}(undef, d)
-  # # for j in 1:d
-  # #   ZtZtrace[j] = sum(abs2, Zblocks[j])
-  # # end
-  # for j in 1:d
-  #   qr0 = qr(XZ0)
-  #   r0 = sum(abs.(diag(qr0.R)) .> ranktol) # Rank
-  #   ss0 = sum(abs2, (qr0.Q' * y[qr0.prow])[(r0 + 1):N])
-
-  #   XZ1 = hcat(XZ0, sparse(Zblocks[j]))
-  #   qr1 = qr(XZ1)
-  #   r1 = sum(abs.(diag(qr1.R)) .> ranktol) # Rank
-
-  #   ss1 = sum(abs2, (qr1.Q' * y[qr1.prow])[(r1 + 1):N])
-
-  #   rvec[j] = r1 - r0
-
-  #   if r1 > r0
-  #     ftable[j, 1:3] = [r1 - r0, ss0 - ss1, (ss0 - ss1) / (r1 - r0)]
-  #     # Fill the M matrix
-  #     M[j, j] = sum(abs2, (qr0.Q' * Matrix(Zblocks[j])[qr0.prow, :])[(r0 + 1):N, :])
-  #     # Q0 = qr0.Q * I(r0)
-  #     # Q1 = qr1.Q * I(r1)
-  #     # M[j, j] = ZtZtrace[j] - sum(abs2, Q0' * Zblocks[j])
-  #     for i in (j + 1):d
-  #       M[j, i] = sum(abs2, (qr0.Q' * Matrix(Zblocks[i])[qr0.prow, :])[(r0 + 1):N, :]) - sum(abs2, (qr1.Q' * Matrix(Zblocks[i])[qr1.prow, :])[(r1 + 1):N, :])
-  #       # term0 = ZtZtrace[i] - sum(abs2, Q0' * Zblocks[i])
-  #       # term1 = ZtZtrace[i] - sum(abs2, Q1' * Zblocks[i])
-  #       # M[j, i] = term0 - term1
-  #     end
-  #   else
-  #     @error "Some sequential ANOVA terms had zero or negative degrees of freedom. Expect an error."
-  #   end
-  #   XZ0 = XZ1
-  # end
-  # # Residuals
-  # ftable[d + 1, 1:3] = [N - r1, ss1, ss1 / (N - r1)]
-  # ftable[1:d, 4] = ftable[1:d, 3] / ftable[d + 1, 3]
-  # for i in 1:d
-  #   ftable[i, 5] = 1. - cdf(FDist(ftable[i, 1], ftable[d + 1, 1]), ftable[i, 3] / ftable[d + 1, 3])
-  # end
-  # sigmasqest = ftable[d + 1, 3]
-  # Initial values
-  # S = ftable[1:d, 2] / sigmasqest - rvec
-  # tauinit = M \ S
-  # tauinit = [t >= 0 ? t : 0. for t in tauinit]
-
   tauinit = initialvalues(aov)
 
   # Create the model
   model = Model(y, X, Z, mvec);
   
-  # Fit the model
+  ## Fit the model ----
   # tauinit = Float64.(zeros(d))
   opt = newton(tauinit, model, control.newtoncontrol);
   tauopt = copy(opt.par)
