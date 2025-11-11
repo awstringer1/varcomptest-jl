@@ -796,7 +796,8 @@ function varcompmodel(
   optcondval = 0
   if A != nothing
     if size(A, 1) < d
-      optcond = newton(tauopt, model, control.newtoncontrol, A = A);
+      tauinit = [t > 0 ? t : 0. for t in tauopt]
+      optcond = newton(tauinit, model, control.newtoncontrol, A = A);
       tauoptcond = copy(optcond.par)
       optcondval = copy(optcond.val)
       docond = true
@@ -843,7 +844,7 @@ function varcompmodel(
       tauinit = initialvalues(aov)
       optsamp = newton(tauinit, modelsamp, control.newtoncontrol, A = nothing);
       if docond
-        taumle = copy(optsamp.par)
+        taumle = [t > 0 ? t : 0. for t in optsamp.par]
         optsampcond = newton(taumle, modelsamp, control.newtoncontrol, A = A);
         lrtboot[b] = -optsamp.val + optsampcond.val
         pvalind[b] = lrtboot[b] >= -opt.val + optcond.val
@@ -881,6 +882,11 @@ export varcompmodel
 export FixedEffects
 export VarCompControl
 export NewtonControl
+export Model, Model!
+export newton
+export anova, anova!
+export initialvalues
+export bootResults
 
 ## END Exports ----
 
