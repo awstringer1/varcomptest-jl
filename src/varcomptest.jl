@@ -237,16 +237,16 @@ struct VarianceComponents
   tau::Vector{Float64}
   ftable::Matrix{Float64}
   A::Union{Nothing, Matrix{Float64}}
-  lrtboot::Union{Nothing, Vector{Float64}}
-  pval::Union{Nothing, Float64}
-  pvaloneside::Union{Nothing, Float64}
-  lrtcond::Union{Nothing, Float64}
+  # lrtboot::Union{Nothing, Vector{Float64}}
+  # pval::Union{Nothing, Float64}
+  # pvaloneside::Union{Nothing, Float64}
+  # lrtcond::Union{Nothing, Float64}
 end
 
 function Base.show(io::IO, x::VarianceComponents)
   column_labels = ["Component", "Df", "Sum Sq", "Mean Sq", "F value", "Pr(>F)"]
-  tau = x.tau
-  d = length(tau) - 1
+  tau = vcat(x.tau, 0.)
+  d = length(tau) - 2
   ftable = x.ftable
   # Add a row of zeroes for the residual variance
 
@@ -262,7 +262,7 @@ function Base.show(io::IO, x::VarianceComponents)
   data = hcat(tau, ftable)
   style = TextTableStyle(first_line_column_label = crayon"bold");
   table_format = TextTableFormat(borders = text_table_borders__unicode_rounded);
-  rownames = vcat(x.names[1:d], "Residual")
+  rownames = vcat(x.names[1:d], "Residual", "Total")
 
   println(io, "F-tests of variance components:")
   pretty_table(data;
@@ -279,7 +279,8 @@ struct bootResults
   # The sampled data
   samples::Matrix{Float64}
   # The sampled log-likelihood ratios
-  lrt::Vector{Float64}
+  lrt::Vector{Float64} # Atau = 0
+  lrtzero::Vector{Float64} # tau = 0
   # The sampled MLE
   mle::Union{Vector{Float64}, Matrix{Float64}}
   # Number of samples
@@ -287,6 +288,7 @@ struct bootResults
   # p-values
   pval::Float64
   pvaloneside::Float64
+  pvalzero::Float64
   A::Union{Nothing, Matrix{Float64}}
 end
 
@@ -321,8 +323,8 @@ function Base.show(io::IO, x::bootResults)
     )
   )
   println("")
-  tbldat = [mean(x.lrt), x.pval, x.pvaloneside]
-  tblnames = ["Mean LRT", "BS p-val, A𝛕 ≠ 0", "BS p-val, A𝛕 > 0"]
+  tbldat = [x.pval, x.pvaloneside, x.pvalboot]
+  tblnames = ["BS p-val, A𝛕 ≠ 0", "BS p-val, A𝛕 > 0", "BS p-val, 𝛕 ≠ 0"]
   pval_highlight_green2 = TextHighlighter(
     (data, i, j) -> (j != 1) && data[i, j] <= .05,
     crayon"green bold"
@@ -380,7 +382,7 @@ mutable struct ANOVAInfo
 end
 
 function Base.show(io::IO, x::ANOVAInfo)
-  vr = VarianceComponents(x.names, Float64.(zeros(length(x.rvec) + 1)), x.ftable, nothing, nothing, nothing, nothing, nothing)
+  vr = VarianceComponents(x.names, Float64.(zeros(length(x.rvec) + 1)), x.ftable, nothing)
   Base.show(io, vr)
 end
 
@@ -391,7 +393,7 @@ anova = function(y::Vector{Float64}, X::Matrix{Float64}, Zblocks::Vector{Adjoint
   # Sparse matrices
   d = length(Zblocks)
   N = length(y)
-  ftable = zeros(d + 1, 5)
+  ftable = zeros(d + 2, 5)
   XZ0 = sparse(X)
   qr0 = Vector{SparseArrays.SPQR.QRSparse{Float64, Int64}}(undef, d)
   qr1 = Vector{SparseArrays.SPQR.QRSparse{Float64, Int64}}(undef, d)  
@@ -439,6 +441,11 @@ anova = function(y::Vector{Float64}, X::Matrix{Float64}, Zblocks::Vector{Adjoint
     ftable[i, 5] = 1. - cdf(FDist(ftable[i, 1], ftable[d + 1, 1]), ftable[i, 3] / ftable[d + 1, 3])
   end
   sigmasqest = ftable[d + 1, 3]
+  # Global
+  ftable[d + 2, 1:3] = [N - r0[1], ss0[1] - ss1[d], (ss0[1] - ss1[d]) / (N - r0[1])]
+  ftable[d + 2, 4] = ftable[d + 2, 3] / ftable[d + 1, 3]
+  ftable[d + 2, 5] = 1. - cdf(FDist(ftable[d + 2, 1], ftable[d + 1, 1]), ftable[d + 2, 4])
+
 
   # return an ANOVA object
   return ANOVAInfo(
@@ -811,13 +818,16 @@ function varcompmodel(
   ## Bootstrapping ----
   B = control.B
   lrtboot = nothing
+  lrtbootzero = nothing
   pval = -1.
   pvaloneside = -1.
   boot = nothing
   if B > 0
     lrtboot = zeros(B)
+    lrtbootzero = zeros(B)
     pvalind = zeros(B)
     pvalonesideind = zeros(B)
+    pvalzeroind = zeros(B)
     mleboot = zeros(B, d)
     # Obtain the model quantities under the conditional model
     Zsamp = zeros(N, B)
@@ -847,24 +857,29 @@ function varcompmodel(
         taumle = [t > 0 ? t : 0. for t in optsamp.par]
         optsampcond = newton(taumle, modelsamp, control.newtoncontrol, A = A);
         lrtboot[b] = -optsamp.val + optsampcond.val
+        lrtbootzero[b] = -optsamp.val
         pvalind[b] = lrtboot[b] >= -opt.val + optcond.val
         pvalonesideind[b] = lrtboot[b] >= -opt.val + optcond.val && all(A * optsamp.par .>= 0.)
+        pvalzeroind[b] = lrtbootzero[b] >= -opt.val
       else
         lrtboot[b] = -optsamp.val
+        lrtbootzero[b] = -optsamp.val
         pvalind[b] = -optsamp.val >= -opt.val
         pvalonesideind[b] = -optsamp.val >= -opt.val && all(optsamp.par .>= 0.)
+        pvalzeroind[b] = -optsamp.val >= -opt.val
       end
       mleboot[b, :] = optsamp.par
     end
     pval = mean(pvalind)
     pvaloneside = mean(pvalonesideind)
-    boot = bootResults(Zsamp, lrtboot, mleboot, B, pval, pvaloneside, A)
+    pvalzero = mean(pvalzeroind)
+    boot = bootResults(Zsamp, lrtboot, lrtbootzero, mleboot, B, pval, pvaloneside, pvalzero, A)
   end
   vr = VarianceComponents(
     renames, varcompest, aov.ftable, 
-    A == nothing ? I(d) : A, 
-    lrtboot, pval, pvaloneside, 
-    optcond == nothing ? -opt.val : -opt.val + optcond.val
+    A == nothing ? I(d) : A
+    # lrtboot, pval, pvaloneside, 
+    # optcond == nothing ? -opt.val : -opt.val + optcond.val
   )
 
   
