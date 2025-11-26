@@ -323,8 +323,8 @@ function Base.show(io::IO, x::bootResults)
     )
   )
   println("")
-  tbldat = [x.pval, x.pvaloneside, x.pvalboot]
-  tblnames = ["BS p-val, A𝛕 ≠ 0", "BS p-val, A𝛕 > 0", "BS p-val, 𝛕 ≠ 0"]
+  tbldat = [x.pval, x.pvaloneside, x.pvalzero]
+  tblnames = ["H0: A𝛕 ≠ 0", "H0: A𝛕 > 0", "H0: 𝛕 ≠ 0"]
   pval_highlight_green2 = TextHighlighter(
     (data, i, j) -> (j != 1) && data[i, j] <= .05,
     crayon"green bold"
@@ -855,19 +855,18 @@ function varcompmodel(
       optsamp = newton(tauinit, modelsamp, control.newtoncontrol, A = nothing);
       if docond
         taumle = [t > 0 ? t : 0. for t in optsamp.par]
-        optsampcond = newton(taumle, modelsamp, control.newtoncontrol, A = A);
+        optsampcond = newton(tauoptcond, modelsamp, control.newtoncontrol, A = A);
         lrtboot[b] = -optsamp.val + optsampcond.val
         lrtbootzero[b] = -optsamp.val
         pvalind[b] = lrtboot[b] >= -opt.val + optcond.val
         pvalonesideind[b] = lrtboot[b] >= -opt.val + optcond.val && all(A * optsamp.par .>= 0.)
-        pvalzeroind[b] = lrtbootzero[b] >= -opt.val
       else
         lrtboot[b] = -optsamp.val
         lrtbootzero[b] = -optsamp.val
         pvalind[b] = -optsamp.val >= -opt.val
         pvalonesideind[b] = -optsamp.val >= -opt.val && all(optsamp.par .>= 0.)
-        pvalzeroind[b] = -optsamp.val >= -opt.val
       end
+      pvalzeroind[b] = -optsamp.val >= -opt.val
       mleboot[b, :] = optsamp.par
     end
     pval = mean(pvalind)
