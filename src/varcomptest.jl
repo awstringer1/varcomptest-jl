@@ -442,7 +442,7 @@ anova = function(y::Vector{Float64}, X::Matrix{Float64}, Zblocks::Vector{Adjoint
   end
   sigmasqest = ftable[d + 1, 3]
   # Global
-  ftable[d + 2, 1:3] = [N - r0[1], ss0[1] - ss1[d], (ss0[1] - ss1[d]) / (N - r0[1])]
+  ftable[d + 2, 1:3] = [r1[d] - r0[1], ss0[1] - ss1[d], (ss0[1] - ss1[d]) / (r1[d] - r0[1])]
   ftable[d + 2, 4] = ftable[d + 2, 3] / ftable[d + 1, 3]
   ftable[d + 2, 5] = 1. - cdf(FDist(ftable[d + 2, 1], ftable[d + 1, 1]), ftable[d + 2, 4])
 
