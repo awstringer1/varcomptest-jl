@@ -119,15 +119,17 @@ struct NewtonControl
   maxitr::Int64
   kappa::Float64
   verbose::Bool
+  onesided::Bool
 end
 
 function NewtonControl(; 
   eps::Float64 = 1e-06,
   maxitr::Int64 = 100,
   kappa::Float64 = 1e-03,
-  verbose::Bool = false
+  verbose::Bool = false,
+  onesided::Bool = false
 )
-  return NewtonControl(eps, maxitr, kappa, verbose)
+  return NewtonControl(eps, maxitr, kappa, verbose, onesided)
 end
 
 struct optResults
@@ -639,6 +641,12 @@ newton = function(tau::Vector{Float64}, model::Model, control::NewtonControl; A:
   tau .= Q2 * tauConstr
   r = length(tauConstr)
   eigtol = control.kappa * 2.
+
+  # One-sided: currently only implemented for r = 1
+  onesided = control.onesided
+  if onesided && r > 1
+    throw("One-sided alternative hypotheses currently only implemented for r = 1")
+  end
   
   D = nrllD(tau, model)
   gg = Q2' * D[:, 1]
@@ -665,6 +673,14 @@ newton = function(tau::Vector{Float64}, model::Model, control::NewtonControl; A:
 
       stepvec .= .-H \ gg
       proposed .= tauConstr .+ stepvec
+      # Reflection
+      if onesided
+        if r > 1
+          throw("SERIOUS ERROR: code should have not gotten this far!")
+        end
+        # Reflect to positive
+        proposed = abs.(proposed)
+      end
       # Step halving
       good = false
       numstephalve = 0
@@ -857,15 +873,14 @@ function varcompmodel(
         taumle = [t > 0 ? t : 0. for t in optsamp.par]
         optsampcond = newton(tauoptcond, modelsamp, control.newtoncontrol, A = A);
         lrtboot[b] = -optsamp.val + optsampcond.val
-        lrtbootzero[b] = -optsamp.val
         pvalind[b] = lrtboot[b] >= -opt.val + optcond.val
-        pvalonesideind[b] = lrtboot[b] >= -opt.val + optcond.val && all(A * optsamp.par .>= 0.)
+        pvalonesideind[b] = (all(A * optsamp.par .> 0.) ? lrtboot[b] : 0.) >= (all(A * opt.par .> 0.) ? -opt.val + optcond.val : 0.)
       else
         lrtboot[b] = -optsamp.val
-        lrtbootzero[b] = -optsamp.val
         pvalind[b] = -optsamp.val >= -opt.val
-        pvalonesideind[b] = -optsamp.val >= -opt.val && all(optsamp.par .>= 0.)
+        pvalonesideind[b] = (all(optsamp.par .> 0.) ? lrtboot[b] : 0.) >= (all(opt.par .> 0.) ? -opt.val + optcond.val : 0.)
       end
+      lrtbootzero[b] = -optsamp.val
       pvalzeroind[b] = -optsamp.val >= -opt.val
       mleboot[b, :] = optsamp.par
     end
