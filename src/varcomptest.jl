@@ -878,7 +878,7 @@ function varcompmodel(
       else
         lrtboot[b] = -optsamp.val
         pvalind[b] = -optsamp.val >= -opt.val
-        pvalonesideind[b] = (all(optsamp.par .> 0.) ? lrtboot[b] : 0.) >= (all(opt.par .> 0.) ? -opt.val + optcond.val : 0.)
+        pvalonesideind[b] = (all(optsamp.par .> 0.) ? -optsamp.val : 0.) >= (all(opt.par .> 0.) ? -opt.val : 0.)
       end
       lrtbootzero[b] = -optsamp.val
       pvalzeroind[b] = -optsamp.val >= -opt.val
