@@ -838,6 +838,8 @@ function varcompmodel(
   pval = -1.
   pvaloneside = -1.
   boot = nothing
+  tauzero = Float64.(zeros(length(opt.par)))
+  nrllzero = nrll(tauzero, model)
   if B > 0
     lrtboot = zeros(B)
     lrtbootzero = zeros(B)
@@ -880,8 +882,9 @@ function varcompmodel(
         pvalind[b] = -optsamp.val >= -opt.val
         pvalonesideind[b] = (all(optsamp.par .> 0.) ? -optsamp.val : 0.) >= (all(opt.par .> 0.) ? -opt.val : 0.)
       end
+      # NOTE: wrong. Data were not generated under H0: tau = 0
       lrtbootzero[b] = -optsamp.val
-      pvalzeroind[b] = -optsamp.val >= -opt.val
+      pvalzeroind[b] = lrtbootzero[b] >= -opt.val
       mleboot[b, :] = optsamp.par
     end
     pval = mean(pvalind)
