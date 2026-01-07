@@ -325,18 +325,22 @@ function Base.show(io::IO, x::bootResults)
     )
   )
   println("")
-  tbldat = [x.pval, x.pvaloneside, x.pvalzero]
-  tblnames = ["H0: A𝛕 ≠ 0", "H0: A𝛕 > 0", "H0: 𝛕 ≠ 0"]
-  pval_highlight_green2 = TextHighlighter(
-    (data, i, j) -> (j != 1) && data[i, j] <= .05,
-    crayon"green bold"
-  )
-  pretty_table(tbldat';
-    column_labels = tblnames,
+  pvaldat = [x.pval, x.pvaloneside]
+  pvalstderr = sqrt.(pvaldat .* (1. .- pvaldat) ./ Float64(B))
+  tbldat = [@sprintf("%.4f ± %.4f", p, se) for (p, se) in zip(pvaldat, pvalstderr)]
+  tblnames = ["H0: A𝛕 ≠ 0", "H0: A𝛕 > 0"]
+  tbldat = hcat(tblnames, tbldat)
+  colnames = ["Hypothesis", "p-value ± std. err."]
+  # pval_highlight_green2 = TextHighlighter(
+  #   (data, i, j) -> (j != 1) && data[i, j] <= .05,
+  #   crayon"green bold"
+  # )
+  pretty_table(tbldat;
+    column_labels = colnames,
     style = style,
     table_format = table_format,
-    formatters = [fmt__round(4)],
-    highlighters = [pval_highlight_green2]
+    formatters = [fmt__round(4)]
+    # highlighters = [pval_highlight_green2]
   )
 end
 
