@@ -327,10 +327,10 @@ function Base.show(io::IO, x::bootResults)
   println("")
   pvaldat = [x.pval, x.pvaloneside]
   pvalstderr = sqrt.(pvaldat .* (1. .- pvaldat) ./ Float64(B))
-  tbldat = [@sprintf("%.4f ± %.4f", p, se) for (p, se) in zip(pvaldat, pvalstderr)]
+  tbldat = [@sprintf("%.4f ± %.4f", p, 2. .* se) for (p, se) in zip(pvaldat, pvalstderr)]
   tblnames = ["H0: A𝛕 ≠ 0", "H0: A𝛕 > 0"]
   tbldat = hcat(tblnames, tbldat)
-  colnames = ["Hypothesis", "p-value ± std. err."]
+  colnames = ["Hypothesis", "p-value ± 2 x std. err."]
   # pval_highlight_green2 = TextHighlighter(
   #   (data, i, j) -> (j != 1) && data[i, j] <= .05,
   #   crayon"green bold"
