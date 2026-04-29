@@ -1,8 +1,7 @@
 # varcomptest-jl
 
 Julia package for fitting variance components models and testing linear hypotheses about variance components. 
-This package currently supports reproduction of the results in the corresponding methods paper which is pending
-submission. This README will be updated with the link to the preprint when it's available.
+This package currently supports reproduction of the results in the preprint [Testing linear combinations of multiple variance components](https://arxiv.org/abs/2604.25744).
 
 The package uses the formula interface of the `MixedModels` `julia` [package](https://juliastats.org/MixedModels.jl/dev/).
 For example, to fit a nested split-plot model to the famous `Oats` data, you would do:
