@@ -120,6 +120,7 @@ struct NewtonControl
   kappa::Float64
   verbose::Bool
   onesided::Bool
+  startingvalues::Union{Vector{Float64}, Nothing}
 end
 
 function NewtonControl(; 
@@ -127,9 +128,10 @@ function NewtonControl(;
   maxitr::Int64 = 100,
   kappa::Float64 = 1e-03,
   verbose::Bool = false,
-  onesided::Bool = false
+  onesided::Bool = false,
+  startingvalues::Union{Vector{Float64}, Nothing} = nothing
 )
-  return NewtonControl(eps, maxitr, kappa, verbose, onesided)
+  return NewtonControl(eps, maxitr, kappa, verbose, onesided, startingvalues)
 end
 
 struct optResults
@@ -652,6 +654,8 @@ newton = function(tau::Vector{Float64}, model::Model, control::NewtonControl; A:
   E = eigen(H)
   stepvec = zeros(r)
   proposed = zeros(r)
+
+
   
   itr = 0
   converged = maximum(abs.(gg)) < control.eps || itr >= control.maxitr
@@ -772,7 +776,11 @@ function varcompmodel(
 
   ## First: ANOVA ----
   aov = anova(y, X, Zblocks, renames)
-  tauinit = initialvalues(aov)
+  if control.newtoncontrol.startingvalues == nothing
+    tauinit = initialvalues(aov)
+  else
+    tauinit = control.newtoncontrol.startingvalues
+  end
 
   # Create the model
   model = Model(y, X, Z, mvec);
