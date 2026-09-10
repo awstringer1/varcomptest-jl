@@ -158,7 +158,7 @@ function Base.show(io::IO, x::optResults)
     println(io, line)
     println(io, "Derivative information:")
     println(io, line)
-    println(io, indent, "Gradient: ", round.(x.derivs.gradient, digits=Int64(round(log10(x.control.eps)))))
+    println(io, indent, "Gradient: ", round.(x.derivs.gradient, digits=3))
     E = eigen(x.derivs.Hessian)
     println(io, indent, "Hessian Eigenvalues: ", round.(E.values, digits = 3))
     println(io, line)
@@ -646,12 +646,6 @@ newton = function(tau::Vector{Float64}, model::Model, control::NewtonControl; A:
   r = length(tauConstr)
   eigtol = control.kappa * 2.
 
-  # One-sided: currently only implemented for r = 1
-  onesided = control.onesided
-  if onesided && r > 1
-    throw("One-sided alternative hypotheses currently only implemented for r = 1")
-  end
-  
   D = nrllD(tau, model)
   gg = Q2' * D[:, 1]
   H = Q2' * D[:, 2:(d + 1)] * Q2
@@ -678,12 +672,13 @@ newton = function(tau::Vector{Float64}, model::Model, control::NewtonControl; A:
       stepvec .= .-H \ gg
       proposed .= tauConstr .+ stepvec
       # Reflection
-      if onesided
-        if r > 1
-          throw("SERIOUS ERROR: code should have not gotten this far!")
-        end
+      if control.onesided
+        # if r > 1
+        #   throw("SERIOUS ERROR: code should have not gotten this far!")
+        # end
         # Reflect to positive
-        proposed = abs.(proposed)
+        # proposed = abs.(proposed)
+        proposed = max.(proposed, 0.)
       end
       # Step halving
       good = false
@@ -831,6 +826,7 @@ function varcompmodel(
     else
       # A is full rank so the conditional MLE is zero.
       # In this case we still bootstrap the full-zero hypothesis
+      # TODO: this, but correctly
       A = Matrix(Float64.(I(d)))
     end
   end
