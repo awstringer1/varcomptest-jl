@@ -134,6 +134,72 @@ function NewtonControl(;
   return NewtonControl(eps, maxitr, kappa, verbose, onesided, startingvalues)
 end
 
+
+struct NewtonHistory
+  step::Vector{Int64}
+  uturn::Vector{Bool}
+  grad::Vector{Bool}
+end
+
+function Base.show(io::IO, history::NewtonHistory)
+  niter = length(history.step)
+
+  @assert length(history.uturn) == niter
+  @assert length(history.grad) == niter
+
+  # Matrix{Any} prevents Bool columns from being converted to Float64.
+  data = Matrix{Any}(undef, niter, 4)
+  data[:, 1] = 1:niter
+  data[:, 2] = history.step
+  data[:, 3] = history.uturn
+  data[:, 4] = history.grad
+
+  step_formatter = (v, i, j) ->
+      j == 2 ? round(v; digits = 4) : v
+
+  uturn_highlight = TextHighlighter(
+      (data, i, j) -> j == 3 && data[i, j] === true,
+      crayon"yellow bold",
+  )
+
+  grad_highlight = TextHighlighter(
+      (data, i, j) -> j == 4 && data[i, j] === true,
+      crayon"red bold",
+  )
+
+  positive_step_highlight = TextHighlighter(
+    (data, i, j) -> j == 2 && data[i, 2] > 0,
+    Crayon(foreground = 208, bold = true),
+  )
+
+  style = TextTableStyle(first_line_column_label = crayon"bold");
+  table_format = TextTableFormat(borders = text_table_borders__unicode_rounded);
+
+  print(io, "Newton optimization history:\n")
+
+  pretty_table(
+      io,
+      data;
+      column_labels = [
+          "Iteration",
+          "Step halving",
+          "U-turn",
+          "Gradient",
+      ],
+      style = style,
+      table_format = table_format,
+      # formatters = [step_formatter],
+      highlighters = [
+          uturn_highlight,
+          grad_highlight,
+          positive_step_highlight,
+      ],
+      maximum_number_of_rows = -1,
+      fit_table_in_display_vertically = false,
+  )
+end
+
+
 struct optResults
   init::Vector{Float64}
   par::Vector{Float64}
@@ -143,6 +209,7 @@ struct optResults
   control::NewtonControl
   executiontime::Float64
   A::Union{Nothing, Matrix{Float64}}
+  history::NewtonHistory
 end
 # Print method for optimization results
 function Base.show(io::IO, x::optResults)
@@ -170,6 +237,7 @@ function Base.show(io::IO, x::optResults)
     println(io, indent, "Maximum number of iterations: ", x.control.maxitr)
     println(io, indent, "Eigenvalue correction (κ): ", x.control.kappa)
     println(io, line)
+    println(io, "Access iteration history in optResults.history")
   else
     r, d = size(x.A)
     Aqr = qr(x.A')
@@ -199,6 +267,7 @@ function Base.show(io::IO, x::optResults)
     println(io, indent, "Maximum number of iterations: ", x.control.maxitr)
     println(io, indent, "Eigenvalue correction (κ): ", x.control.kappa)
     println(io, line)
+    println(io, "Access iteration history in optResults.history")
   end
 end
 
@@ -655,8 +724,11 @@ newton = function(tau::Vector{Float64}, model::Model, control::NewtonControl; A:
   stepvec = zeros(r)
   proposed = zeros(r)
 
-
-  
+  # Iteration history
+  stephistory = Vector{Int64}(undef, control.maxitr)
+  uturnhistory = Vector{Bool}(undef, control.maxitr)
+  gradhistory = Vector{Bool}(undef, control.maxitr)
+  history = NewtonHistory(stephistory, uturnhistory, gradhistory)
   itr = 0
   converged = maximum(abs.(gg)) < control.eps || itr >= control.maxitr
   t = @elapsed begin 
@@ -671,19 +743,19 @@ newton = function(tau::Vector{Float64}, model::Model, control::NewtonControl; A:
         println("Hessian eigenvalues: ", round.(E.values, digits = 3))
         println("Adjusted eigenvalues: ", round.(abs.(E.values) .+ control.kappa, digits = 3))
       end
-      H .= E.vectors * diagm(abs.(E.values) .+ control.kappa) * E.vectors'
+
+      # Check if the eigenvalues triggered a correction
+      checkzeroeigen = any(isapprox.(E.values, 0.0; atol = 1e-08, rtol = 0.0))
+      checknegeigen = any(E.values .< 0.0)
+      if checkzeroeigen || checknegeigen
+        H .= E.vectors * diagm(abs.(E.values) .+ control.kappa) * E.vectors'
+      end
+      history.uturn[itr] = checknegeigen
+      history.grad[itr] = checkzeroeigen
+      
 
       stepvec .= .-H \ gg
       proposed .= tauConstr .+ stepvec
-      # Reflection
-      if control.onesided
-        # if r > 1
-        #   throw("SERIOUS ERROR: code should have not gotten this far!")
-        # end
-        # Reflect to positive
-        # proposed = abs.(proposed)
-        proposed = max.(proposed, 0.)
-      end
       # Step halving
       good = false
       numstephalve = 0
@@ -696,6 +768,7 @@ newton = function(tau::Vector{Float64}, model::Model, control::NewtonControl; A:
           good = true
         end
       end
+      history.step[itr] = numstephalve
       tauConstr .= proposed
       tau .= Q2 * tauConstr
       D .= nrllD(tau, model)
@@ -710,6 +783,8 @@ newton = function(tau::Vector{Float64}, model::Model, control::NewtonControl; A:
       end
     end
   end
+  # Retain the history only for the iterations actually executed
+  foreach(v -> resize!(v, itr), (history.step, history.uturn, history.grad))
   out = optResults(
     tauinit,
     tau,
@@ -718,7 +793,8 @@ newton = function(tau::Vector{Float64}, model::Model, control::NewtonControl; A:
     itr,
     control,
     t,
-    A
+    A,
+    history
   )
   return out
 end
