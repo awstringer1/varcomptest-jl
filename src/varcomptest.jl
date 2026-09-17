@@ -765,6 +765,10 @@ newton = function(tau::Vector{Float64}, model::Model, control::NewtonControl; A:
         if isnan(newval)
           # proposed .= proposed ./ 2. # OLD, incorrect
           stepvec .= stepvec ./ 2.
+          if all(isapprox.(stepvec, 0.0; atol = 1e-08, rtol = 0.0))
+            good = true
+            converged = true
+          end
           proposed .= tauConstr .+ stepvec
           numstephalve = numstephalve + 1
         # elseif newval > oldval
