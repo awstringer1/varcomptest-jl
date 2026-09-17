@@ -759,19 +759,19 @@ newton = function(tau::Vector{Float64}, model::Model, control::NewtonControl; A:
       # Step halving
       good = false
       numstephalve = 0
+      # oldval = nrll(Q2 * tauConstr, model)
       while !good
-        oldval = nrll(Q2 * tauConstr, model)
         newval = nrll(Q2 * proposed, model)
         if isnan(newval)
           # proposed .= proposed ./ 2. # OLD, incorrect
           stepvec .= stepvec ./ 2.
           proposed .= tauConstr .+ stepvec
           numstephalve = numstephalve + 1
-        elseif newval > oldval
-          stepvec .= stepvec ./ 2.
-          proposed .= tauConstr .+ stepvec
-          numstephalve = numstephalve + 1
-        else
+        # elseif newval > oldval
+        #   stepvec .= stepvec ./ 2.
+        #   proposed .= tauConstr .+ stepvec
+        #   numstephalve = numstephalve + 1
+        # else
           good = true
         end
       end
