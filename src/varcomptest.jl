@@ -771,7 +771,7 @@ newton = function(tau::Vector{Float64}, model::Model, control::NewtonControl; A:
         #   stepvec .= stepvec ./ 2.
         #   proposed .= tauConstr .+ stepvec
         #   numstephalve = numstephalve + 1
-        # else
+        else
           good = true
         end
       end
